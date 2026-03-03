@@ -75,7 +75,16 @@ Each line is prefixed with an ISO timestamp and a tag:
 | `[REQ] METHOD url` | Outgoing network request |
 | `[RES] status url` | Network response received |
 
-Logs are also written to `capture.log` in the project directory.
+## Log files
+
+Logs are automatically written to the `logs/` directory in the project root. The log file management includes:
+
+- **Timestamped files**: Each log file is named with an ISO 8601 timestamp (e.g., `logs/2026-03-03T12-30-45.log`)
+- **Size-based rotation**: A new log file is created when the current file reaches 10 MB
+- **Retention limit**: Only the 10 most recent log files are kept; older files are automatically deleted
+- **Dedicated directory**: All log files are stored in the `logs/` directory
+
+No manual configuration is needed—the `capture.js` script handles all log rotation and cleanup automatically when it starts.
 
 ## Using your own browser
 

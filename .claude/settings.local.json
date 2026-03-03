@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(lsof:*)",
+      "Bash(pgrep:*)",
+      "Bash(curl:*)",
+      "Bash(node:*)",
+      "Bash(tmux:*)",
+      "Bash(chmod +x:*)"
+    ]
+  }
+}

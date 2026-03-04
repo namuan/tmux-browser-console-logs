@@ -68,7 +68,18 @@ function writeLog(message) {
 async function capture() {
   initializeLogging();
 
-  const client = await CDP();
+  // List all available targets and connect to the first page
+  const targets = await CDP.List();
+  const pageTarget = targets.find(t => t.type === 'page');
+  
+  if (!pageTarget) {
+    console.error('No page target found. Make sure you have at least one browser tab/window open.');
+    process.exit(1);
+  }
+
+  console.log(`Connecting to target: ${pageTarget.title || pageTarget.url}`);
+  
+  const client = await CDP({ target: pageTarget });
   const { Network, Runtime, Log } = client;
 
   await Network.enable();
@@ -82,11 +93,52 @@ async function capture() {
   });
 
   Runtime.consoleAPICalled(({ type, args, timestamp }) => {
-    const msg = args.map(a => a.value ?? a.description ?? '').join(' ');
+    const msg = args.map(a => {
+      if (a.value !== undefined) return String(a.value);
+      if (a.description !== undefined) return a.description;
+      if (a.preview) return a.preview.description || JSON.stringify(a.preview);
+      return JSON.stringify(a);
+    }).join(' ');
     const formatted = `${new Date(timestamp).toISOString()} [CONSOLE:${type}] ${msg}`;
     console.log(formatted);
     writeLog(formatted);
   });
+
+  Runtime.exceptionThrown(({ exceptionDetails, timestamp }) => {
+    const { exception, text, stackTrace, url, lineNumber, columnNumber } = exceptionDetails;
+    
+    let errorMsg = text || 'Unknown error';
+    
+    // Extract exception details if available
+    if (exception) {
+      if (exception.description) {
+        errorMsg = exception.description;
+      } else if (exception.value !== undefined) {
+        errorMsg = String(exception.value);
+      }
+    }
+    
+    // Add location info if available
+    const location = url ? ` at ${url}:${lineNumber}:${columnNumber}` : '';
+    
+    // Format stack trace if available
+    let stackInfo = '';
+    if (stackTrace && stackTrace.callFrames && stackTrace.callFrames.length > 0) {
+      stackInfo = '\n  ' + stackTrace.callFrames
+        .map(frame => `at ${frame.functionName || '(anonymous)'} (${frame.url}:${frame.lineNumber}:${frame.columnNumber})`)
+        .join('\n  ');
+    }
+    
+    const formatted = `${new Date(timestamp).toISOString()} [EXCEPTION] ${errorMsg}${location}${stackInfo}`;
+    console.log(formatted);
+    writeLog(formatted);
+  });
+
+  console.log('✓ Console logging enabled');
+  console.log('✓ Network monitoring enabled');
+  console.log('✓ Browser logs enabled');
+  console.log('✓ Exception tracking enabled');
+  console.log('\nWaiting for events...\n');
 
   Network.requestWillBeSent(({ request, timestamp }) => {
     const formatted = `${new Date(timestamp * 1000).toISOString()} [REQ] ${request.method} ${request.url}`;

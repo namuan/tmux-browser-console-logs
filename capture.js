@@ -1,155 +1,123 @@
 import CDP from 'chrome-remote-interface';
-import { createWriteStream, existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { join } from 'path';
 
 const LOGS_DIR = 'logs';
-const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_LOG_SIZE = 10 * 1024 * 1024;
 const MAX_FILES = 10;
-const ts = () => new Date().toISOString();
+const MAX_BODY_LENGTH = 10 * 1024;
+const SKIP_BODY_MIME = new Set(['image', 'video', 'audio', 'font', 'octet-stream']);
 
-function getLogFilePath() {
+const ts = () => new Date().toISOString();
+const fmtHeader = ([k, v]) => `  ${k}: ${v}`;
+
+function formatHeaders(h) {
+  return h && Object.keys(h).length ? Object.entries(h).map(fmtHeader).join('\n') : '';
+}
+
+function formatBody(body, base64) {
+  if (!body) return '(empty)';
+  try {
+    const text = base64 ? Buffer.from(body, 'base64').toString('utf8') : body;
+    return text.length > MAX_BODY_LENGTH
+      ? text.slice(0, MAX_BODY_LENGTH) + `\n... [truncated, ${text.length - MAX_BODY_LENGTH} more bytes]`
+      : text;
+  } catch {
+    return `(binary, ${body.length} bytes base64)`;
+  }
+}
+
+export function newLogPath() {
   return join(LOGS_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
 }
 
-function ensureLogsDir() {
-  if (!existsSync(LOGS_DIR)) {
-    mkdirSync(LOGS_DIR, { recursive: true });
-  }
-}
-
-function cleanupOldLogs() {
+function cleanup() {
+  if (!existsSync(LOGS_DIR)) return;
   const files = readdirSync(LOGS_DIR)
     .filter(f => f.endsWith('.log'))
     .map(f => join(LOGS_DIR, f))
-    .map(path => ({ path, mtime: statSync(path).mtime }))
-    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
-
-  for (let i = MAX_FILES; i < files.length; i++) {
-    unlinkSync(files[i].path);
-  }
+    .map(p => ({ path: p, mtime: statSync(p).mtime }))
+    .sort((a, b) => b.mtime - a.mtime);
+  files.slice(MAX_FILES).forEach(f => unlinkSync(f.path));
 }
 
-let currentLogPath = null;
-let logStream = null;
+let stream, path;
 
-function rotateLogIfNeeded() {
-  if (!logStream || !currentLogPath) return;
-
-  const stats = statSync(currentLogPath);
-  if (stats.size >= MAX_LOG_SIZE) {
-    logStream.end();
-    logStream = null;
-    currentLogPath = null;
-
-    ensureLogsDir();
-    cleanupOldLogs();
-
-    currentLogPath = getLogFilePath();
-    logStream = createWriteStream(currentLogPath, { flags: 'w' });
-    logStream.on('error', console.error);
-  }
+function initStream() {
+  mkdirSync(LOGS_DIR, { recursive: true });
+  cleanup();
+  path = newLogPath();
+  stream = createWriteStream(path, { flags: 'w' }).on('error', () => {});
+  return stream;
 }
 
-function initializeLogging() {
-  ensureLogsDir();
-  cleanupOldLogs();
-  currentLogPath = getLogFilePath();
-  logStream = createWriteStream(currentLogPath, { flags: 'w' });
-  logStream.on('error', console.error);
-}
-
-function writeLog(message) {
-  rotateLogIfNeeded();
-  if (logStream) {
-    logStream.write(message + '\n');
-  }
+function write(msg) {
+  if (!stream) initStream();
+  else if (statSync(path).size >= MAX_LOG_SIZE) { stream.end(); stream = null; initStream(); }
+  stream.write(msg + '\n');
 }
 
 async function capture() {
-  initializeLogging();
-
-  // List all available targets and connect to the first page
   const targets = await CDP.List();
-  const pageTarget = targets.find(t => t.type === 'page');
-  
-  if (!pageTarget) {
-    console.error('No page target found. Make sure you have at least one browser tab/window open.');
+  const target = targets.find(t => t.type === 'page');
+
+  if (!target) {
+    console.error('No page target found.');
     process.exit(1);
   }
 
-  console.log(`Connecting to target: ${pageTarget.title || pageTarget.url}`);
-  
-  const client = await CDP({ target: pageTarget });
+  console.log(`Connecting: ${target.title || target.url}`);
+
+  const client = await CDP({ target });
   const { Network, Runtime, Log } = client;
 
   await Network.enable();
   await Log.enable();
   await Runtime.enable();
 
-  Log.entryAdded(({ entry }) => {
-    const msg = `${ts()} [LOG:${entry.level}] ${entry.text}`;
-    console.log(msg);
-    writeLog(msg);
-  });
+  const log = msg => { console.log(msg); write(msg); };
+
+  Log.entryAdded(({ entry }) =>
+    log(`${ts()} [LOG:${entry.level}] ${entry.text}`));
 
   Runtime.consoleAPICalled(({ type, args, timestamp }) => {
     const msg = args.map(a => {
       if (a.value !== undefined) return String(a.value);
-      if (a.description !== undefined) return a.description;
+      if (a.description) return a.description;
       if (a.preview) return a.preview.description || JSON.stringify(a.preview);
       return JSON.stringify(a);
     }).join(' ');
-    const formatted = `${new Date(timestamp).toISOString()} [CONSOLE:${type}] ${msg}`;
-    console.log(formatted);
-    writeLog(formatted);
+    log(`${new Date(timestamp).toISOString()} [CONSOLE:${type}] ${msg}`);
   });
 
   Runtime.exceptionThrown(({ exceptionDetails, timestamp }) => {
     const { exception, text, stackTrace, url, lineNumber, columnNumber } = exceptionDetails;
-    
-    let errorMsg = text || 'Unknown error';
-    
-    // Extract exception details if available
-    if (exception) {
-      if (exception.description) {
-        errorMsg = exception.description;
-      } else if (exception.value !== undefined) {
-        errorMsg = String(exception.value);
-      }
-    }
-    
-    // Add location info if available
-    const location = url ? ` at ${url}:${lineNumber}:${columnNumber}` : '';
-    
-    // Format stack trace if available
-    let stackInfo = '';
-    if (stackTrace && stackTrace.callFrames && stackTrace.callFrames.length > 0) {
-      stackInfo = '\n  ' + stackTrace.callFrames
-        .map(frame => `at ${frame.functionName || '(anonymous)'} (${frame.url}:${frame.lineNumber}:${frame.columnNumber})`)
-        .join('\n  ');
-    }
-    
-    const formatted = `${new Date(timestamp).toISOString()} [EXCEPTION] ${errorMsg}${location}${stackInfo}`;
-    console.log(formatted);
-    writeLog(formatted);
+    const msg = exception?.description || String(exception?.value ?? text ?? 'Unknown error');
+    const loc = url ? ` at ${url}:${lineNumber}:${columnNumber}` : '';
+    const stack = stackTrace?.callFrames?.length
+      ? '\n  ' + stackTrace.callFrames.map(f => `at ${f.functionName || '(anonymous)'} (${f.url}:${f.lineNumber}:${f.columnNumber})`).join('\n  ')
+      : '';
+    log(`${new Date(timestamp).toISOString()} [EXCEPTION] ${msg}${loc}${stack}`);
   });
 
-  console.log('✓ Console logging enabled');
-  console.log('✓ Network monitoring enabled');
-  console.log('✓ Browser logs enabled');
-  console.log('✓ Exception tracking enabled');
-  console.log('\nWaiting for events...\n');
+  console.log('✓ Logging, network, console, exceptions enabled\nWaiting for events...\n');
 
   Network.requestWillBeSent(({ request, timestamp }) => {
-    const formatted = `${new Date(timestamp * 1000).toISOString()} [REQ] ${request.method} ${request.url}`;
-    console.log(formatted);
-    writeLog(formatted);
+    const hdrs = formatHeaders(request.headers);
+    const body = request.postData ? `\n  POST body:\n${formatBody(request.postData)}` : '';
+    log(`${new Date(timestamp * 1000).toISOString()} [REQ] ${request.method} ${request.url}${hdrs ? '\n' + hdrs : ''}${body}`);
   });
 
-  Network.responseReceived(({ response, timestamp }) => {
-    const formatted = `${new Date(timestamp * 1000).toISOString()} [RES] ${response.status} ${response.url}`;
-    console.log(formatted);
-    writeLog(formatted);
+  Network.responseReceived(({ response, timestamp, requestId }) => {
+    const hdrs = formatHeaders(response.headers);
+    log(`${new Date(timestamp * 1000).toISOString()} [RES] ${response.status} ${response.statusText || ''} ${response.url}${hdrs ? '\n' + hdrs : ''}`);
+
+    const mime = response.mimeType?.split('/')[0];
+    if (mime && !SKIP_BODY_MIME.has(mime)) {
+      Network.getResponseBody({ requestId }).then(({ body, base64Encoded }) =>
+        log(`${new Date(timestamp * 1000).toISOString()} [RES:BODY] ${requestId}\n${formatBody(body, base64Encoded)}`)
+      ).catch(() => {});
+    }
   });
 }
 

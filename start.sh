@@ -41,24 +41,24 @@ CHROMIUM=$(find_chromium)
 echo "Using Chromium: $CHROMIUM" >&2
 echo "Opening URL: $URL" >&2
 
-# Kill any existing session
+# Kill any existing session + stale Chromium
 tmux kill-session -t "$SESSION" 2>/dev/null || true
+if [ -f /tmp/browser-logs-chromium.pid ]; then
+  kill "$(cat /tmp/browser-logs-chromium.pid)" 2>/dev/null || true
+  rm -f /tmp/browser-logs-chromium.pid
+fi
 
-# Create detached session — top pane: Chromium
-tmux new-session -d -s "$SESSION" -x 220 -y 50 \
-  -e "DEBUG_PORT=$DEBUG_PORT"
+# Launch Chromium in background (outside tmux), write PID
+"$CHROMIUM" --remote-debugging-port=$DEBUG_PORT --no-first-run --no-default-browser-check "$URL" 2>&1 &
+CHROMIUM_PID=$!
+echo $CHROMIUM_PID > /tmp/browser-logs-chromium.pid
+disown $CHROMIUM_PID
 
+# Create detached session — single pane just for capture.js
+tmux new-session -d -s "$SESSION" -x 220 -y 50
 tmux rename-window -t "$SESSION" "browser"
 
-# Launch Chromium in top pane (kept small: 8 lines)
 tmux send-keys -t "$SESSION:0.0" \
-  "\"$CHROMIUM\" --remote-debugging-port=$DEBUG_PORT --no-first-run --no-default-browser-check \"$URL\" 2>&1" Enter
-
-# Split: bottom pane gets 85% of height — this is where logs stream
-tmux split-window -v -t "$SESSION:0" -p 85
-
-# Wait for browser, then start capture (logs automatically written to logs/ directory)
-tmux send-keys -t "$SESSION:0.1" \
   "cd \"$SCRIPT_DIR\" && printf 'Waiting for browser on :%s...\n' $DEBUG_PORT && until curl -sf http://localhost:$DEBUG_PORT/json >/dev/null; do sleep 0.3; done && echo 'Connected. Streaming logs (also writing to logs/ directory)' && node capture.js" Enter
 
 tmux attach-session -t "$SESSION"

@@ -1,6 +1,6 @@
 # tmux-browser-console-logs
 
-Stream browser console logs and network traffic into a tmux session using the Chrome DevTools Protocol (CDP).
+Stream browser console logs, network traffic, and JavaScript exceptions into a tmux session using the Chrome DevTools Protocol (CDP).
 
 ## Requirements
 
@@ -16,53 +16,43 @@ Stream browser console logs and network traffic into a tmux session using the Ch
 npm install
 ```
 
-### 2. Get a Chromium binary
-
-If you don't have one, use Playwright to download it:
+### 2. Launch
 
 ```bash
-npx playwright install chromium
+./start.sh "https://example.com"
 ```
 
-Find the binary path:
+If you don't have a Chromium binary, `start.sh` will automatically download one via `npx playwright install chromium`.
 
-```bash
-ls ~/Library/Caches/ms-playwright/
-```
-
-The binary will be at a path like:
-
-```
-~/Library/Caches/ms-playwright/chromium-XXXX/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing
-```
-
-Update the `CHROMIUM` variable in `start.sh` to match your version number.
-
-### 3. Launch the tmux session
-
-```bash
-./start.sh
-```
+If no URL is given, the browser opens `about:blank`.
 
 This will:
 
-1. Kill any existing `browser-logs` tmux session
-2. Open Chromium with `--remote-debugging-port=9222` in the top pane
-3. Wait until the browser is ready, then start streaming logs in the bottom pane
+1. Kill any existing `browser-logs` tmux session and stale Chromium process
+2. Launch Chromium with `--remote-debugging-port=9222` as a background process (PID saved to `/tmp/browser-logs-chromium.pid`)
+3. Create a detached tmux session with a single pane running `capture.js`
+4. Wait until the browser is ready, then start streaming logs
 
 ## Layout
 
 ```
 ┌─────────────────────────────────────┐
-│  Chromium (remote-debugging:9222)   │
-├─────────────────────────────────────┤
-│  Waiting for browser...             │
-│  Connected. Streaming logs...       │
-│  2026-03-03T... [REQ] GET https://  │
-│  2026-03-03T... [CONSOLE:log] hello │
-│  2026-03-03T... [RES] 200 https://  │
+│  tmux session "browser-logs"        │
+│  ┌───────────────────────────────┐  │
+│  │ Waiting for browser...        │  │
+│  │ Connected. Streaming logs...  │  │
+│  │ 2026-03-03T... [REQ] GET ...  │  │
+│  │ 2026-03-03T... [CONSOLE:log]  │  │
+│  │ 2026-03-03T... [RES] 200 ...  │  │
+│  │ 2026-03-03T... [EXCEPTION]    │  │
+│  │ 2026-03-03T... [RES:BODY]     │  │
+│  └───────────────────────────────┘  │
+│                                     │
+│  Chromium (background process)      │
 └─────────────────────────────────────┘
 ```
+
+Chromium runs as a background process **outside** of tmux. The tmux session contains a single pane running the capture script.
 
 ## Log format
 
@@ -70,10 +60,19 @@ Each line is prefixed with an ISO timestamp and a tag:
 
 | Tag | Source |
 |-----|--------|
-| `[LOG:error]` / `[LOG:warning]` | Browser-level entries (CSP violations, deprecations) |
-| `[CONSOLE:log]` / `[CONSOLE:warn]` / `[CONSOLE:error]` | Direct `console.*` calls from page scripts |
-| `[REQ] METHOD url` | Outgoing network request |
-| `[RES] status url` | Network response received |
+| `[LOG:level]` | Browser-level entries (CSP violations, deprecations, etc.) — level is `error`, `warning`, `info`, `verbose`, etc. |
+| `[CONSOLE:type]` | Direct `console.*` calls from page scripts — type is `log`, `warn`, `error`, `debug`, `info`, `trace`, `assert`, `count`, `timeEnd`, etc. |
+| `[REQ] METHOD url` | Outgoing network request, with request headers and POST body (if any) |
+| `[RES] status url` | Network response received, with response headers |
+| `[RES:BODY] requestId` | Response body content (for non-binary MIME types; truncated at 10 KB) |
+| `[EXCEPTION] message` | Uncaught JavaScript exceptions with stack trace and source location |
+
+### Body capture details
+
+- Response bodies are fetched for MIME types other than `image`, `video`, `audio`, `font`, and `octet-stream`
+- Body content is truncated at 10 KB with a note about remaining bytes
+- Binary bodies that fail UTF-8 decoding are reported as `(binary, N bytes base64)`
+- POST data is logged inline with `[REQ]` entries
 
 ## Log files
 
@@ -81,10 +80,10 @@ Logs are automatically written to the `logs/` directory in the project root. The
 
 - **Timestamped files**: Each log file is named with an ISO 8601 timestamp (e.g., `logs/2026-03-03T12-30-45.log`)
 - **Size-based rotation**: A new log file is created when the current file reaches 10 MB
-- **Retention limit**: Only the 10 most recent log files are kept; older files are automatically deleted
+- **Retention limit**: Only the 10 most recent log files are kept; older files are automatically deleted on startup and during rotation
 - **Dedicated directory**: All log files are stored in the `logs/` directory
 
-No manual configuration is needed—the `capture.js` script handles all log rotation and cleanup automatically when it starts.
+No manual configuration is needed—the `capture.js` script handles all log rotation and cleanup automatically.
 
 ## Using your own browser
 
@@ -107,6 +106,19 @@ Verify the debug endpoint is reachable before connecting:
 
 ```bash
 curl http://localhost:9222/json
+```
+
+## Stopping
+
+```bash
+./stop.sh
+```
+
+Or manually:
+
+```bash
+tmux kill-session -t browser-logs
+kill "$(cat /tmp/browser-logs-chromium.pid)"
 ```
 
 ## Tmux controls

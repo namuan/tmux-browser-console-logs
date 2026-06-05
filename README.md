@@ -1,12 +1,12 @@
 # tmux-browser-console-logs
 
-Stream browser console logs, network traffic, and JavaScript exceptions into a tmux session using the Chrome DevTools Protocol (CDP).
+Stream browser console logs, network traffic, and JavaScript exceptions into a tmux session using [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) — a stealth Chromium binary with source-level fingerprint patches that passes bot detection.
 
 ## Requirements
 
-- [Node.js](https://nodejs.org) (v18+)
+- [Node.js](https://nodejs.org) (v20+)
 - [tmux](https://github.com/tmux/tmux)
-- A Chromium-based browser with remote debugging support
+- [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) — auto-downloaded on first launch (~200MB)
 
 ## Setup
 
@@ -22,24 +22,25 @@ npm install
 ./start.sh "https://example.com"
 ```
 
-If you don't have a Chromium binary, `start.sh` will automatically download one via `npx playwright install chromium`.
+If you don't have a CloakBrowser binary yet, `start.sh` will automatically download one via the `cloakbrowser` npm package.
 
 If no URL is given, the browser opens `about:blank`.
 
 This will:
 
-1. Kill any existing `browser-logs` tmux session and stale Chromium process
-2. Launch Chromium with `--remote-debugging-port=9222` as a background process (PID saved to `/tmp/browser-logs-chromium.pid`)
-3. Create a detached tmux session with a single pane running `capture.js`
-4. Wait until the browser is ready, then start streaming logs
+1. Kill any existing `browser-logs` tmux session and stale process
+2. Ensure the CloakBrowser binary is downloaded (cached in `~/.cloakbrowser/`)
+3. Launch CloakBrowser with stealth fingerprint args and `--remote-debugging-port=9222` as a background process (PID saved to `/tmp/browser-logs-chromium.pid`)
+4. Create a detached tmux session with a single pane running `capture.js`
+5. Wait until the browser is ready, then start streaming logs
 
 ## Layout
 
 ```
-┌─────────────────────────────────────┐
+──────────────────────────────────────
 │  tmux session "browser-logs"        │
 │  ┌───────────────────────────────┐  │
-│  │ Waiting for browser...        │  │
+│  │ Waiting for CloakBrowser...   │  │
 │  │ Connected. Streaming logs...  │  │
 │  │ 2026-03-03T... [REQ] GET ...  │  │
 │  │ 2026-03-03T... [CONSOLE:log]  │  │
@@ -48,11 +49,11 @@ This will:
 │  │ 2026-03-03T... [RES:BODY]     │  │
 │  └───────────────────────────────┘  │
 │                                     │
-│  Chromium (background process)      │
+│  CloakBrowser (background process)  │
 └─────────────────────────────────────┘
 ```
 
-Chromium runs as a background process **outside** of tmux. The tmux session contains a single pane running the capture script.
+CloakBrowser runs as a background process **outside** of tmux. The tmux session contains a single pane running the capture script.
 
 ## Log format
 
@@ -87,12 +88,15 @@ No manual configuration is needed—the `capture.js` script handles all log rota
 
 ## Using your own browser
 
-You can connect to any running Chromium-based browser (Chrome, Vivaldi, Edge, etc.) as long as it was launched with `--remote-debugging-port=9222`.
+You can connect to any running Chromium-based browser (Chrome, Vivaldi, Edge, CloakBrowser, etc.) as long as it was launched with `--remote-debugging-port=9222`.
 
 **Important:** if the browser is already running, quit it first — otherwise the new instance hands off to the existing one and the debug flag is ignored.
 
 ```bash
-# Vivaldi example
+# CloakBrowser example (find the binary path first)
+~/.cloakbrowser/chromium-*/Chromium.app/Contents/MacOS/Chromium --remote-debugging-port=9222
+
+# Or any other Chromium browser
 ~/Applications/Vivaldi.app/Contents/MacOS/Vivaldi --remote-debugging-port=9222
 ```
 

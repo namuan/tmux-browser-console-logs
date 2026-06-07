@@ -3,7 +3,13 @@ set -e
 
 SESSION="browser-logs"
 DEBUG_PORT=9222
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 URL="${1:-about:blank}"
 
 # Ensure npm dependencies
